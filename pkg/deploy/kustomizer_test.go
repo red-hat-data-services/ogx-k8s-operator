@@ -583,3 +583,373 @@ func TestSetDefaultPort(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, int(llamav1alpha1.DefaultServerPort), actualPort)
 }
+
+func TestRemoveDeploymentReplicas(t *testing.T) {
+	t.Parallel()
+
+	instance := &llamav1alpha1.LlamaStackDistribution{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "example",
+			Namespace: "llama",
+		},
+		Spec: llamav1alpha1.LlamaStackDistributionSpec{
+			Server: llamav1alpha1.ServerSpec{
+				Autoscaling: &llamav1alpha1.AutoscalingSpec{
+					MaxReplicas: 5,
+				},
+			},
+		},
+	}
+
+	resMap := resmap.New()
+	require.NoError(t, resMap.Append(newTestResource(t, "apps/v1", "Deployment", "deployment", "llama", map[string]any{
+		"replicas": int32(1),
+	})))
+	require.NoError(t, resMap.Append(newTestResource(t, "apps/v1", "Deployment", "deployment-no-replicas", "llama", map[string]any{})))
+
+	require.NoError(t, applyPlugins(&resMap, instance))
+
+	resources := resMap.Resources()
+	require.Len(t, resources, 2)
+
+	var hasReplicas bool
+	for _, res := range resources {
+		if res.GetKind() != "Deployment" {
+			continue
+		}
+		spec, err := res.Map()
+		require.NoError(t, err)
+		specMap, ok := spec["spec"].(map[string]any)
+		require.True(t, ok, "deployment should have a spec map")
+		if _, ok := specMap["replicas"]; ok {
+			hasReplicas = true
+		}
+	}
+
+	require.False(t, hasReplicas, "replicas should be removed from all deployments when autoscaling is enabled")
+}
+
+// TestHasLegacyCABundleVolumes tests the detection of legacy CA bundle volumes.
+func TestHasLegacyCABundleVolumes(t *testing.T) {
+	ctx := t.Context()
+
+	t.Run("detects legacy emptyDir ca-bundle volume", func(t *testing.T) {
+		deployment := newTestResource(t, "apps/v1", "Deployment", "test-deploy", "test-ns", map[string]any{
+			"template": map[string]any{
+				"spec": map[string]any{
+					"volumes": []any{
+						map[string]any{
+							"name":     "ca-bundle",
+							"emptyDir": map[string]any{},
+						},
+					},
+				},
+			},
+		})
+
+		u, err := resourceToUnstructured(t, deployment)
+		require.NoError(t, err)
+
+		result := hasLegacyCABundleVolumes(ctx, u)
+		require.True(t, result, "should detect legacy ca-bundle emptyDir volume")
+	})
+
+	t.Run("detects legacy ca-bundle-source volume", func(t *testing.T) {
+		deployment := newTestResource(t, "apps/v1", "Deployment", "test-deploy", "test-ns", map[string]any{
+			"template": map[string]any{
+				"spec": map[string]any{
+					"volumes": []any{
+						map[string]any{
+							"name": "ca-bundle-source",
+							"configMap": map[string]any{
+								"name": "odh-trusted-ca-bundle",
+							},
+						},
+					},
+				},
+			},
+		})
+
+		u, err := resourceToUnstructured(t, deployment)
+		require.NoError(t, err)
+
+		result := hasLegacyCABundleVolumes(ctx, u)
+		require.True(t, result, "should detect legacy ca-bundle-source volume")
+	})
+
+	t.Run("does not detect new-style ca-bundle configMap", func(t *testing.T) {
+		deployment := newTestResource(t, "apps/v1", "Deployment", "test-deploy", "test-ns", map[string]any{
+			"template": map[string]any{
+				"spec": map[string]any{
+					"volumes": []any{
+						map[string]any{
+							"name": "ca-bundle",
+							"configMap": map[string]any{
+								"name": "managed-ca-bundle",
+							},
+						},
+					},
+				},
+			},
+		})
+
+		u, err := resourceToUnstructured(t, deployment)
+		require.NoError(t, err)
+
+		result := hasLegacyCABundleVolumes(ctx, u)
+		require.False(t, result, "should not detect new-style ca-bundle ConfigMap as legacy")
+	})
+
+	t.Run("does not detect unrelated volumes", func(t *testing.T) {
+		deployment := newTestResource(t, "apps/v1", "Deployment", "test-deploy", "test-ns", map[string]any{
+			"template": map[string]any{
+				"spec": map[string]any{
+					"volumes": []any{
+						map[string]any{
+							"name":     "data",
+							"emptyDir": map[string]any{},
+						},
+						map[string]any{
+							"name": "config",
+							"configMap": map[string]any{
+								"name": "app-config",
+							},
+						},
+					},
+				},
+			},
+		})
+
+		u, err := resourceToUnstructured(t, deployment)
+		require.NoError(t, err)
+
+		result := hasLegacyCABundleVolumes(ctx, u)
+		require.False(t, result, "should not detect unrelated volumes as legacy")
+	})
+
+	t.Run("returns false when no volumes present", func(t *testing.T) {
+		deployment := newTestResource(t, "apps/v1", "Deployment", "test-deploy", "test-ns", map[string]any{})
+
+		u, err := resourceToUnstructured(t, deployment)
+		require.NoError(t, err)
+
+		result := hasLegacyCABundleVolumes(ctx, u)
+		require.False(t, result, "should return false when no volumes present")
+	})
+}
+
+// TestLegacyCABundleUpgrade tests that deployments with legacy CA bundle volumes
+// are replaced instead of patched to avoid SSA conflicts.
+func TestLegacyCABundleUpgrade(t *testing.T) {
+	ctx, testNs, owner := setupApplyResourcesTest(t, "legacy-ca-upgrade")
+
+	// Create an existing deployment with legacy CA bundle volumes (old operator pattern)
+	existingDeployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-deployment",
+			Namespace: testNs,
+			Labels:    map[string]string{"version": "old"},
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(owner, owner.GroupVersionKind()),
+			},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: ptr(int32(1)),
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"app": "test"},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{"app": "test"},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "main",
+							Image: "test:v1",
+						},
+					},
+					// Legacy CA bundle volumes (old operator pattern)
+					Volumes: []corev1.Volume{
+						{
+							Name: "data",
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{},
+							},
+						},
+						{
+							Name: "ca-bundle",
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{},
+							},
+						},
+						{
+							Name: "ca-bundle-source",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: "odh-trusted-ca-bundle",
+									},
+								},
+							},
+						},
+					},
+					InitContainers: []corev1.Container{
+						{
+							Name:  "ca-bundle-init",
+							Image: "busybox",
+						},
+					},
+				},
+			},
+		},
+	}
+	require.NoError(t, k8sClient.Create(ctx, existingDeployment))
+
+	// Create desired deployment with new CA bundle pattern (new operator pattern)
+	// Must use same selector as existing deployment (selector is immutable)
+	desiredDeployment := newTestResource(t, "apps/v1", "Deployment", "test-deployment", testNs, map[string]any{
+		"replicas": int32(1),
+		"selector": map[string]any{
+			"matchLabels": map[string]any{
+				"app": "test",
+			},
+		},
+		"template": map[string]any{
+			"metadata": map[string]any{
+				"labels": map[string]any{
+					"app": "test",
+				},
+			},
+			"spec": map[string]any{
+				"containers": []any{
+					map[string]any{
+						"name":  "main",
+						"image": "test:v2",
+					},
+				},
+				"volumes": []any{
+					map[string]any{
+						"name":     "data",
+						"emptyDir": map[string]any{},
+					},
+					// New CA bundle pattern - single ConfigMap volume
+					map[string]any{
+						"name": "ca-bundle",
+						"configMap": map[string]any{
+							"name": "managed-ca-bundle",
+						},
+					},
+				},
+			},
+		},
+	})
+	desiredDeployment.SetLabels(map[string]string{"version": "new"})
+
+	resMap := resmap.New()
+	require.NoError(t, resMap.Append(desiredDeployment))
+
+	// Apply the resources (should trigger replacement instead of patch)
+	require.NoError(t, ApplyResources(ctx, k8sClient, scheme.Scheme, owner, &resMap))
+
+	// Verify the deployment was updated
+	updatedDeployment := &appsv1.Deployment{}
+	deploymentKey := types.NamespacedName{Name: "test-deployment", Namespace: testNs}
+	require.NoError(t, k8sClient.Get(ctx, deploymentKey, updatedDeployment))
+
+	// Verify labels were updated (proves Update was used, not just patch)
+	require.Equal(t, "new", updatedDeployment.Labels["version"], "deployment labels should be updated")
+
+	// Verify container image was updated
+	require.Equal(t, "test:v2", updatedDeployment.Spec.Template.Spec.Containers[0].Image, "container image should be updated")
+
+	// Verify legacy volumes are removed
+	volumeNames := make([]string, len(updatedDeployment.Spec.Template.Spec.Volumes))
+	for i, vol := range updatedDeployment.Spec.Template.Spec.Volumes {
+		volumeNames[i] = vol.Name
+	}
+	require.NotContains(t, volumeNames, "ca-bundle-source", "legacy ca-bundle-source volume should be removed")
+
+	// Verify new ca-bundle is a ConfigMap (not emptyDir)
+	var caBundleVolume *corev1.Volume
+	for i := range updatedDeployment.Spec.Template.Spec.Volumes {
+		if updatedDeployment.Spec.Template.Spec.Volumes[i].Name == "ca-bundle" {
+			caBundleVolume = &updatedDeployment.Spec.Template.Spec.Volumes[i]
+			break
+		}
+	}
+	require.NotNil(t, caBundleVolume, "ca-bundle volume should exist")
+	require.NotNil(t, caBundleVolume.ConfigMap, "ca-bundle should be a ConfigMap volume")
+	require.Nil(t, caBundleVolume.EmptyDir, "ca-bundle should not be an emptyDir volume")
+	require.Equal(t, "managed-ca-bundle", caBundleVolume.ConfigMap.Name, "ca-bundle ConfigMap name should be correct")
+
+	// Verify init containers are removed
+	require.Empty(t, updatedDeployment.Spec.Template.Spec.InitContainers, "legacy init containers should be removed")
+}
+
+// resourceToUnstructured converts a kustomize resource to an unstructured object.
+func resourceToUnstructured(t *testing.T, res *kresource.Resource) (*unstructured.Unstructured, error) {
+	t.Helper()
+
+	yamlBytes, err := res.AsYAML()
+	if err != nil {
+		return nil, err
+	}
+
+	u := &unstructured.Unstructured{}
+	if err := yaml.Unmarshal(yamlBytes, u); err != nil {
+		return nil, err
+	}
+
+	return u, nil
+}
+
+// ptr is a helper function to get a pointer to a value.
+func ptr[T any](v T) *T {
+	return &v
+}
+
+func TestGetFieldMappings_RecreateStrategyWithStorage(t *testing.T) {
+	t.Run("includes Recreate strategy when storage is configured", func(t *testing.T) {
+		owner := &llamav1alpha1.LlamaStackDistribution{
+			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+			Spec: llamav1alpha1.LlamaStackDistributionSpec{
+				Replicas: 1,
+				Server: llamav1alpha1.ServerSpec{
+					Storage: &llamav1alpha1.StorageSpec{},
+				},
+			},
+		}
+
+		mappings := getFieldMappings(owner)
+
+		var found bool
+		for _, m := range mappings {
+			if m.TargetField == "/spec/strategy/type" && m.TargetKind == "Deployment" {
+				assert.Equal(t, "Recreate", m.SourceValue)
+				assert.True(t, m.CreateIfNotExists)
+				found = true
+				break
+			}
+		}
+		require.True(t, found, "should include Recreate strategy mapping when storage is configured")
+	})
+
+	t.Run("does not include strategy when storage is nil", func(t *testing.T) {
+		owner := &llamav1alpha1.LlamaStackDistribution{
+			ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: "default"},
+			Spec: llamav1alpha1.LlamaStackDistributionSpec{
+				Replicas: 1,
+				Server:   llamav1alpha1.ServerSpec{},
+			},
+		}
+
+		mappings := getFieldMappings(owner)
+
+		for _, m := range mappings {
+			if m.TargetField == "/spec/strategy/type" {
+				t.Fatal("should not include strategy mapping when storage is nil")
+			}
+		}
+	})
+}
