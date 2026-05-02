@@ -6,7 +6,7 @@ All Tekton file updates **must be made in the `konflux-central` repository**.
 
 ## ✅ How to Make Changes
 
-To modify the pipelines for `llama-stack-k8s-operator` in the `rhoai-3.4` release:
+To modify the pipelines for `ogx-k8s-operator` in the `rhoai-3.4` release:
 
 - Clone the [`konflux-central`](https://github.com/red-hat-data-services/konflux-central) repository.
 
@@ -24,7 +24,7 @@ git checkout rhoai-3.4
 - Navigate to the Tekton files for your component(s).
 
 ```bash
-cd pipelineruns/llama-stack-k8s-operator/.tekton
+cd pipelineruns/ogx-k8s-operator/.tekton
 ```
 
 - Make the required changes to the Tekton YAML files.
@@ -32,7 +32,7 @@ cd pipelineruns/llama-stack-k8s-operator/.tekton
 - Commit and push your changes.
 
 ```bash
-git commit -am "Update pipelinerun for llama-stack-k8s-operator (rhoai-3.4)"
+git commit -am "Update pipelinerun for ogx-k8s-operator (rhoai-3.4)"
 git push origin rhoai-3.4
 ```
 
