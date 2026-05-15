@@ -38,12 +38,12 @@ USER 1001
 
 ENTRYPOINT ["/manager"]
 
-LABEL com.redhat.component="odh-llama-stack-k8s-operator-container" \
-      description="kubernetes operator that is responsible for creating and managing llama-stack server" \
-      summary="kubernetes operator that is responsible for creating and managing llama-stack server" \
-      name="rhoai/odh-llama-stack-k8s-operator-rhel9" \
+LABEL com.redhat.component="odh-ogx-operator-container" \
+      description="kubernetes operator that is responsible for creating and managing ogx server" \
+      summary="kubernetes operator that is responsible for creating and managing ogx server" \
+      name="rhoai/odh-ogx-operator-rhel9" \
       maintainer="['managed-open-data-hub@redhat.com']" \
       io.openshift.expose-services="" \
-      io.k8s.display-name="odh-llama-stack-k8s-operator" \
-      io.k8s.description="odh-llama-stack-k8s-operator" \
+      io.k8s.display-name="odh-ogx-operator" \
+      io.k8s.description="odh-ogx-operator" \
       com.redhat.license_terms="https://www.redhat.com/licenses/Red_Hat_Standard_EULA_20191108.pdf"
