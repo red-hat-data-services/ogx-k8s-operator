@@ -1,0 +1,50 @@
+FROM registry.redhat.io/ubi9/go-toolset:1.25@sha256:90a36bc2013b3fcb28e2a4b082c9b895d7c2c679e58b95aed9721970f3339d0e AS builder
+ARG TARGETOS=linux
+ARG TARGETARCH
+ARG CGO_ENABLED=1
+
+USER root
+WORKDIR /workspace/ogx-module
+
+# Copy module dependencies first for better layer reuse.
+COPY ogx-module/go.mod go.mod
+COPY ogx-module/go.sum go.sum
+RUN go mod download
+
+# Copy only the module-local code needed for the manager binary.
+COPY ogx-module/cmd/ cmd/
+COPY ogx-module/internal/ internal/
+COPY ogx-module/pkg/ pkg/
+
+# Build the manager binary.
+RUN CGO_ENABLED=${CGO_ENABLED} GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -a -o /workspace/bin/manager ./cmd/ogx-module
+
+# Copy the module hack scripts and the root OGX operator manifests source, then
+# stage the root operator manifests into config/manifests inside the image build.
+COPY ogx-module/hack/ hack/
+COPY config/ ../config/
+RUN USE_LOCAL=true bash hack/get_manifests.sh
+
+# OpenShift may run the container with an arbitrary UID, so make the staged
+# manifests readable in the final image.
+RUN chmod -R a+rX config/manifests/
+
+FROM registry.access.redhat.com/ubi9/ubi-minimal@sha256:44bc70ef6e6ea9a70e353be97f4722e10358d09fbb9494ca943b2a641049690e
+WORKDIR /
+
+COPY --from=builder /workspace/bin/manager .
+COPY --from=builder /workspace/ogx-module/config/manifests/ /manifests/
+
+USER 1001
+
+ENTRYPOINT ["/manager"]
+
+LABEL com.redhat.component="odh-ogx-module-container" \
+      description="OGX Module controller that manages OGX operator deployment and lifecycle" \
+      summary="OGX Module controller that manages OGX operator deployment and lifecycle" \
+      name="rhoai/odh-ogx-module-rhel9" \
+      maintainer="['managed-open-data-hub@redhat.com']" \
+      io.openshift.expose-services="" \
+      io.k8s.display-name="odh-ogx-module" \
+      io.k8s.description="odh-ogx-module" \
+      com.redhat.license_terms="https://www.redhat.com/licenses/Red_Hat_Standard_EULA_20191108.pdf"
