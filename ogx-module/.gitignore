@@ -1,4 +1,4 @@
-# Downloaded manifests (fetched by get-manifests.sh)
+# Downloaded manifests (fetched by get-manifests.sh for local dev)
 config/manifests/ogx/
 
 # Built binary
