@@ -40,7 +40,7 @@ spec:
     value: true
   - name: prefetch-input
     value: |
-      [{"type": "gomod", "path": "ogx-module/"}]
+      [{"type": "gomod", "path": "ogx-module"}]
   - name: build-platforms
     value:
     - linux/x86_64
