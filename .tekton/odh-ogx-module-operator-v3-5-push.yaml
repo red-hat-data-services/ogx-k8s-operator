@@ -1,5 +1,6 @@
 
 apiVersion: tekton.dev/v1
+# konflux build manual retrigger - 2026-08-11 10:00:58
 kind: PipelineRun
 metadata:
   annotations:
@@ -40,7 +41,7 @@ spec:
     value: true
   - name: prefetch-input
     value: |
-      [{"type": "gomod", "path": "ogx-module"}]
+      [{"type": "gomod", "path": "ogx-module/"}]
   - name: build-platforms
     value:
     - linux/x86_64
