@@ -4,7 +4,9 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened, edited, labeled]
     branches:
+      - 'rhoai-2.25'
       - 'rhoai-3.5'
+      - 'rhoai-3.6-ea.1'
 jobs:
   post-codefreeze-gate:
     if: github.event.action != 'labeled' || github.event.label.name == 'run-gatekeeper'
