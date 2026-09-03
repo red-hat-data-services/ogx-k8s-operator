@@ -21,7 +21,7 @@ COPY ogx-module/pkg/ pkg/
 RUN CGO_ENABLED=${CGO_ENABLED} GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -a -o /workspace/bin/manager ./cmd/ogx-module
 
 # Runtime
-FROM registry.access.redhat.com/ubi9/ubi-minimal@sha256:7fbeae18dc9476399f565e68255f602a3374ea8614ba3d14843565131a13ff93
+FROM registry.redhat.io/ubi9/ubi-minimal-pqc@sha256:8a842ac769de709143e4edeace516f2008dfdc431b64670ad3353fa323b44736
 WORKDIR /
 
 COPY --from=builder /workspace/bin/manager .
