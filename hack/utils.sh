@@ -42,11 +42,37 @@ convert_env_to_yaml() {
     echo -e "${yaml_env}"
 }
 
+# Detect the architecture of the cluster nodes (falls back to the local machine).
+# Can be overridden with TARGET_ARCH (e.g. TARGET_ARCH=s390x). The result is
+# exported so later calls (including subshells) do not query the cluster again.
+detect_target_arch() {
+    if [ -z "${TARGET_ARCH:-}" ]; then
+        local node_archs
+        node_archs="$(kubectl get nodes -o jsonpath='{.items[*].status.nodeInfo.architecture}' 2>/dev/null | tr ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/ *$//' || true)"
+        if [ -z "${node_archs}" ]; then
+            node_archs="$(uname -m 2>/dev/null || true)"
+        fi
+        export TARGET_ARCH="${node_archs}"
+    fi
+}
+
+# True only when every cluster node is s390x, so mixed clusters keep the defaults.
+is_s390x_platform() {
+    detect_target_arch
+    [ "${TARGET_ARCH}" = "s390x" ]
+}
+
 # can extend later once we support other providers
 validate_provider() {
     local provider="${1}"
     case "${provider}" in
         "ollama"|"vllm")
+            # Only vLLM is supported on s390x: the ollama image has no s390x build.
+            if [ "${provider}" = "ollama" ] && is_s390x_platform; then
+                echo "Error: provider 'ollama' is not supported on s390x (no s390x image)."
+                echo "Use: --provider vllm"
+                return 1
+            fi
             return 0
             ;;
         *)
@@ -71,10 +97,17 @@ get_provider_config() {
             echo "DEFAULT_ENV_VARS=OLLAMA_KEEP_ALIVE=60m"
             ;;
         "vllm")
-            echo "IMAGE=docker.io/vllm/vllm-openai:latest"
+            if is_s390x_platform; then
+                # docker.io/vllm/vllm-openai has no s390x build; use the RHOAI vLLM CPU image
+                # and a small default model that fits CPU-only s390x nodes.
+                echo "IMAGE=registry.redhat.io/rhoai/odh-vllm-cpu-rhel9:v3.0.0"
+                echo "DEFAULT_MODEL=TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+            else
+                echo "IMAGE=docker.io/vllm/vllm-openai:latest"
+                echo "DEFAULT_MODEL=meta-llama/Llama-3.2-1B"
+            fi
             echo "INFERENCE_SERVER=vllm"
             echo "COMMAND=[\"/bin/sh\", \"-c\"]"
-            echo "DEFAULT_MODEL=meta-llama/Llama-3.2-1B"
             echo "PORT=8000"
             echo "HEALTH_PATH=/health"
             echo "DEFAULT_ENV_VARS=CUDA_VISIBLE_DEVICES='', VLLM_NO_USAGE_STATS=1, VLLM_TARGET_DEVICE=cpu, VLLM_ENFORCE_EAGER=1, HUGGING_FACE_HUB_TOKEN=secret:hf-token-secret:token"
@@ -162,6 +195,9 @@ load_provider_config() {
         exit 1
     fi
 
+    # Detect once here so the exported TARGET_ARCH is visible to the subshell below
+    detect_target_arch
+
     # Load provider configuration
     while IFS='=' read -r key value; do
         if [[ -n "${key}" && ! "${key}" =~ ^# ]]; then
@@ -181,7 +217,13 @@ load_provider_config() {
         export INIT_ARGS="ollama serve & sleep 15 && ollama pull ${MODEL}"
         export DEFAULT_ARGS="ollama serve"
     else
-        export DEFAULT_ARGS="vllm serve --dtype auto --model ${MODEL}"
+        if is_s390x_platform; then
+            # The RHOAI vLLM CPU image takes the model as a positional argument. Cap the context
+            # length at 2048 so it fits the default max_num_batched_tokens on CPU.
+            export DEFAULT_ARGS="vllm serve ${MODEL} --dtype auto --max-model-len 2048"
+        else
+            export DEFAULT_ARGS="vllm serve --dtype auto --model ${MODEL}"
+        fi
         export INIT_ARGS="sleep 1"  # here only to pull down the same image in initContainer
     fi
 
