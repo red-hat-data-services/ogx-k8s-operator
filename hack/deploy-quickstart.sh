@@ -34,7 +34,7 @@ while [[ $# -gt 0 ]]; do
         --help)
             echo "Usage: $0 [OPTIONS]"
             echo "Options:"
-            echo "  --provider NAME     Provider to use (if not set default: ollama)"
+            echo "  --provider NAME     Provider to use (if not set default: ollama; only vllm is supported on s390x)"
             echo "                      Supported providers: ollama, vllm"
             echo "  --model NAME        Model to run (if not set, default: llama3.2:1b)"
             echo "                      For vllm see all https://docs.vllm.ai/en/latest/models/supported_models.html"
@@ -157,9 +157,15 @@ spec:
   type: ClusterIP
 EOF
 
-echo "This may take up to 5 minutes for the image to be pulled and container to start..."
-if ! kubectl rollout status "deployment/${SERVER_NAME}" -n "${NAMESPACE}" --timeout=300s; then
-    echo "Error: Deployment failed to become ready within 5 minutes"
+# The RHOAI vLLM CPU image on s390x is larger and slower to start, so allow longer.
+ROLLOUT_TIMEOUT_MINUTES=5
+if is_s390x_platform; then
+    ROLLOUT_TIMEOUT_MINUTES=15
+fi
+
+echo "This may take up to ${ROLLOUT_TIMEOUT_MINUTES} minutes for the image to be pulled and container to start..."
+if ! kubectl rollout status "deployment/${SERVER_NAME}" -n "${NAMESPACE}" --timeout="$((ROLLOUT_TIMEOUT_MINUTES * 60))s"; then
+    echo "Error: Deployment failed to become ready within ${ROLLOUT_TIMEOUT_MINUTES} minutes"
     exit 1
 fi
 echo "Deployment is ready!"
