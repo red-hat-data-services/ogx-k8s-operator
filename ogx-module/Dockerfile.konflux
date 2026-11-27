@@ -1,5 +1,6 @@
 # Build the ogx-module manager binary.
-FROM registry.redhat.io/ubi9/go-toolset:1.26@sha256:0e3894cea4fc077084245e8aa2befc8a7d91a4f60fbf850f0b5b555cbe62ee26 AS builder
+# UBI 10 — RHEL 10 has PQC crypto by default (no ubi-minimal-pqc / crypto-policies step).
+FROM registry.access.redhat.com/ubi10/go-toolset@sha256:e94c38ff4a099b755af60c73ac87198c613f369eb7f818d45c96fbc3f21047de AS builder
 ARG TARGETOS=linux
 ARG TARGETARCH
 ARG CGO_ENABLED=1
@@ -21,7 +22,7 @@ COPY ogx-module/pkg/ pkg/
 RUN CGO_ENABLED=${CGO_ENABLED} GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -a -o /workspace/bin/manager ./cmd/ogx-module
 
 # Runtime
-FROM registry.redhat.io/ubi9/ubi-minimal-pqc:9.8@sha256:d638f3b49b79575329aacdae2739f954effe2467c12147711e73445c4fc97819
+FROM registry.access.redhat.com/ubi10/ubi-minimal@sha256:f0c7b9ae9914fcf183e7c36fc46864903c2d2caf3af327421913ae54b3d29e94
 WORKDIR /
 
 COPY --from=builder /workspace/bin/manager .
